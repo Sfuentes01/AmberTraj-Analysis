@@ -1,0 +1,15 @@
+*.csv
+*.dat
+*.pdb
+*.json
+*.xlsx
+DATA/
+data/
+RAW/
+raw/
+.ipynb_checkpoints/
+__pychache__/
+*.pyc
+venv/
+env/
+.env
