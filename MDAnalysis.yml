@@ -1,0 +1,14 @@
+name: MDAnalysis
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - mdanalysis
+  - ipywidgets
+  - jupyterlab
+  - dssp
+  - prolif
+  - py3dmol
+  - freesasa
+prefix: /home/sfuentes/miniconda3/envs/MDAnalysis
