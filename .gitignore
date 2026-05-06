@@ -3,6 +3,9 @@
 *.pdb
 *.json
 *.xlsx
+*.png
+*.svg
+sync.sh
 DATA/
 data/
 RAW/
