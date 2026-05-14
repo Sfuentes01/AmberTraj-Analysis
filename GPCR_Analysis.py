@@ -297,32 +297,47 @@ def run_dihedrals(u, system_name, out_dir, motif_dry, motif_tswitch, motif_npy):
     sys_df.to_csv(out_dir / f"{system_name}_Dihedral_Chi1.csv", index=False)
 
 
-def run_sasa(system, args, active_ranges):
-    logging.info(f"Calculating SASA for {system.name}...")
+def run_sasa(u, system_name, out_dir, sasa_resids):
+    logging.info(f"Calculating SASA for {system_name}...")
+
+    # Mute the C-library's stderr pipe
     freesasa.setVerbosity(freesasa.nowarnings)
-    u = system.get_universe()
 
-    res_str = " ".join(map(str, args.sasa))
+    res_str = " ".join(map(str, sasa_resids))
     pocket_sel = f"protein and resid {res_str}"
-    pocket_ag = u.select_atoms(pocket_sel)
-    
-    if len(pocket_ag) == 0: return
 
-    # FIX: Pass the AtomGroup directly instead of (u, select=...) to avoid array dimension mismatch
+    # 1. Select the AtomGroup first
+    pocket_ag = u.select_atoms(pocket_sel)
+
+    if len(pocket_ag) == 0:
+        logging.warning(" -> WARNING: No atoms found for SASA selection. Skipping.")
+        return
+
+    logging.info(f" -> Selected {len(pocket_ag)} atoms across {len(pocket_ag.residues)} residues.")
+
+    # 2. FIX: Pass the AtomGroup directly instead of (u, select=...)
     sasa_calc = SASAAnalysis(pocket_ag).run(verbose=True)
-    
-    # FIX: Safe extraction of the SASA array
+
+    total_frames = len(u.trajectory)
+    dt_ps = getattr(u.trajectory, 'dt', 10.0)
+
+    # 3. FIX: Safe extraction of the SASA array
     try:
         sasa_data = sasa_calc.results.sasa
     except AttributeError:
         # Fallback for different mdakit_sasa versions
-        sasa_data = sasa_calc.results.get('total_sasa', np.zeros(system.total_frames))
+        sasa_data = sasa_calc.results.get('total_sasa', np.zeros(total_frames))
 
-    pd.DataFrame({
-        'Frame': np.arange(system.total_frames),
-        'Time_ns': np.arange(system.total_frames) * (system.dt_ps / 1000.0),
+    # 4. Build and save the DataFrame
+    sasa_df = pd.DataFrame({
+        'Frame': np.arange(total_frames),
+        'Time_ns': np.arange(total_frames) * (dt_ps / 1000.0),
         'SASA_Å2': sasa_data
-    }).to_csv(system.out_dir / f"{system.name}_Pocket_SASA.csv", index=False)
+    })
+
+    csv_path = out_dir / f"{system_name}_Pocket_SASA.csv"
+    sasa_df.to_csv(csv_path, index=False)
+    logging.info(f" -> SASA data successfully saved.")
 
 def run_volume(u, system_name, top, traj_list, out_dir, vol_resids):
     logging.info(f"Calculating Cavity Volume (pyKVFinder) for {system_name}...")
