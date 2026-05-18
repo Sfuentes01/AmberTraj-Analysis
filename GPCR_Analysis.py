@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 # General
 import os
 import argparse
@@ -164,7 +166,7 @@ def run_rmsd(u, protein_sel, ligand_sel, system_name, top, traj_list, out_dir):
     if ligand_sel:
         data_dict['Ligand_RMSD'] = R.results.rmsd[:, 3]
 
-    pd.DataFrame(data_dict).to_csv(out_dir / f'{system_name}_RMSD.csv', index=False)
+    pd.DataFrame(data_dict).to_csv(out_dir / f'{system_name}_RMSD_Data.csv', index=False)
 
 
 def run_rmsf(u, protein_sel, ligand_sel, system_name, top, traj_list, out_dir):
@@ -233,6 +235,12 @@ def run_dssp(u, protein_sel, ligand_sel, system_name, out_dir):
         combined_ss = dssp_calc.results.dssp
         total_frames = combined_ss.shape[0]
 
+        # --- NEW: Save the RAW frame-by-frame letter data ---
+        df_raw = pd.DataFrame(combined_ss, columns=selection.residues.resids)
+        df_raw.index.name = 'Frame'
+        df_raw.to_csv(out_dir / f"{system_name}_{target_name}_Raw_SS.csv")
+        # ----------------------------------------------------
+
         helix_counts = np.isin(combined_ss, ['H', 'G', 'I']).sum(axis=0)
         sheet_counts = np.isin(combined_ss, ['E', 'B']).sum(axis=0)
         coil_counts  = total_frames - (helix_counts + sheet_counts)
@@ -249,7 +257,10 @@ def run_dssp(u, protein_sel, ligand_sel, system_name, out_dir):
         df_target['Dominant_SS']  = np.where(max_vals >= 60.0, dominant, 'Mixed')
         df_target['Confidence_%'] = max_vals.round(2)
 
-        df_target.to_csv(out_dir / f"{system_name}_{target_name}_SS_Data.csv", index=True)
+        # --- RENAMED: Output precisely matches the Jupyter pipeline ---
+        out_file = out_dir / f"{system_name}_{target_name}_SS_Per_Res.csv"
+        df_target.to_csv(out_file, index=True)
+        logging.info(f" -> Saved {target_name} SS classifications to {out_file.name}")
 
 
 def run_dihedrals(u, system_name, out_dir, motif_dry, motif_tswitch, motif_npy):
@@ -335,20 +346,15 @@ def run_sasa(u, system_name, out_dir, sasa_resids):
         'SASA_Å2': sasa_data
     })
 
-    csv_path = out_dir / f"{system_name}_Pocket_SASA.csv"
+    csv_path = out_dir / f"{system_name}_Intracellular_Pocket_SASA.csv"
     sasa_df.to_csv(csv_path, index=False)
     logging.info(f" -> SASA data successfully saved.")
 
 def run_volume(u, system_name, top, traj_list, out_dir, vol_resids):
     logging.info(f"Calculating Cavity Volume (pyKVFinder) for {system_name}...")
 
-    ref = mda.Universe(top, traj_list[0])
-    ref.trajectory[0]
-    backbone_sel = "protein and backbone"
-
-    align_transform = transformations.fit_rot_trans(
-        u.select_atoms(backbone_sel), ref.select_atoms(backbone_sel))
-    u.trajectory.add_transformations(align_transform)
+    # REMOVED: Redundant on-the-fly alignment (ref and align_transform).
+    # The trajectory (u) is already aligned in RAM because RMSF ran first.
 
     protein  = u.select_atoms("protein")
     vdw_dict = {'C': 1.70, 'O': 1.52, 'N': 1.55, 'S': 1.80, 'H': 1.20, 'P': 1.80}
@@ -413,9 +419,7 @@ def run_volume(u, system_name, top, traj_list, out_dir, vol_resids):
         'Frame':     range(total_frames),
         'Time_ns':   [i * (dt_ps / 1000.0) for i in range(total_frames)],
         'Volume_Å3': volumes
-    }).to_csv(out_dir / f"{system_name}_Cavity_Volume.csv", index=False)
-
-    logging.info(f" -> Cavity volume data successfully saved.")
+    }).to_csv(out_dir / f"{system_name}_Intracellular_Pocket_Volume.csv", index=False)
 
 def run_intramolecular_frames(u, system_name, rep_num, target_sel_str,
                                tracked_interactions, out_dir, n_jobs):
