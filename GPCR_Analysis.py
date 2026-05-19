@@ -123,6 +123,44 @@ ADVANCED / OVERRIDES:
 # Helper / Patch
 # =============================================================================
 
+def build_aligned_universe(topology_path, trajectory_files,
+                           align_sel="protein and backbone"):
+    """
+    Create an isolated aligned universe for analyses that should not
+    share state with the global trajectory.
+    """
+
+    logging.info(" -> Initializing isolated trajectory...")
+
+    u = mda.Universe(topology_path, *trajectory_files)
+
+    ref = mda.Universe(topology_path, trajectory_files[0])
+    ref.trajectory[0]
+
+    logging.info(" -> Applying alignment...")
+
+    align.AlignTraj(
+        u,
+        ref,
+        select=align_sel,
+        in_memory=True
+    ).run()
+
+    del ref
+    gc.collect()
+
+    return u
+
+
+def release_universe(u_obj, label="trajectory"):
+
+    if u_obj is not None:
+        del u_obj
+
+    gc.collect()
+
+    logging.info(f" -> Cleared {label} from memory.")
+
 def patch_prolif_intramolecular(fp):
     """
     Patches a ProLIF fingerprint object to ignore self-interactions (i == j),
@@ -308,115 +346,351 @@ def run_dihedrals(u, system_name, out_dir, motif_dry, motif_tswitch, motif_npy):
     sys_df.to_csv(out_dir / f"{system_name}_Dihedral_Chi1.csv", index=False)
 
 
-def run_sasa(u, system_name, out_dir, sasa_resids):
-    logging.info(f"Calculating SASA for {system_name}...")
+def run_sasa(top,
+             traj_list,
+             system_name,
+             out_dir,
+             sasa_resids):
 
-    freesasa.setVerbosity(freesasa.nowarnings)
+    logging.info(
+        f"Calculating SASA "
+        f"for {system_name}..."
+    )
 
-    res_str = " ".join(map(str, sasa_resids))
-    pocket_sel = f"protein and resid {res_str}"
-
-    # 1. Select the AtomGroup first
-    pocket_ag = u.select_atoms(pocket_sel)
-
-    if len(pocket_ag) == 0:
-        logging.warning(" -> WARNING: No atoms found for SASA selection. Skipping.")
-        return
-
-    logging.info(f" -> Selected {len(pocket_ag)} atoms across {len(pocket_ag.residues)} residues.")
-
-    sasa_calc = SASAAnalysis(pocket_ag).run(verbose=True)
-
-    total_frames = len(u.trajectory)
-    dt_ps = getattr(u.trajectory, 'dt', 10.0)
+    u_sasa = None
 
     try:
-        sasa_data = sasa_calc.results.sasa
-    except AttributeError:
-        # Fallback for different mdakit_sasa versions
-        sasa_data = sasa_calc.results.get('total_sasa', np.zeros(total_frames))
 
-    # 4. Build and save the DataFrame
-    sasa_df = pd.DataFrame({
-        'Frame': np.arange(total_frames),
-        'Time_ns': np.arange(total_frames) * (dt_ps / 1000.0),
-        'SASA_A2': sasa_data
-    })
+        logging.info(
+            " -> Initializing "
+            "isolated trajectory..."
+        )
 
-    csv_path = out_dir / f"{system_name}_Intracellular_Pocket_SASA.csv"
-    sasa_df.to_csv(csv_path, index=False)
-    logging.info(f" -> SASA data successfully saved.")
+        u_sasa = build_aligned_universe(
+            top,
+            traj_list
+        )
 
-def run_volume(u, system_name, top, traj_list, out_dir, vol_resids):
-    logging.info(f"Calculating Cavity Volume (pyKVFinder) for {system_name}...")
+        res_str = " ".join(
+            map(
+                str,
+                sasa_resids
+            )
+        )
 
-    # REMOVED: Redundant on-the-fly alignment (ref and align_transform).
-    # The trajectory (u) is already aligned in RAM because RMSF ran first.
+        pocket_sel = (
+            f"protein and "
+            f"resid {res_str}"
+        )
 
-    protein  = u.select_atoms("protein")
-    vdw_dict = {'C': 1.70, 'O': 1.52, 'N': 1.55, 'S': 1.80, 'H': 1.20, 'P': 1.80}
-    radii    = np.array([vdw_dict.get(atom.element.upper(), 1.50) for atom in protein])
+        pocket_ag = (
+            u_sasa.select_atoms(
+                pocket_sel
+            )
+        )
+
+        if len(pocket_ag) == 0:
+
+            logging.warning(
+                "No atoms found."
+            )
+
+            return
+
+        logging.info(
+            f" -> "
+            f"{len(pocket_ag)} atoms "
+            f"{len(pocket_ag.residues)} residues"
+        )
+
+        freesasa.setVerbosity(
+            freesasa.nowarnings
+        )
+
+        sasa_calc = SASAAnalysis(
+            u_sasa,
+            select=pocket_sel
+        )
+
+        sasa_calc.run(
+            verbose=True
+        )
+
+        dt_ps = getattr(
+            u_sasa.trajectory,
+            "dt",
+            10.0
+        )
+
+        total_frames = len(
+            u_sasa.trajectory
+        )
+
+        sasa_df = pd.DataFrame({
+
+            "Frame":
+                np.arange(
+                    total_frames
+                ),
+
+            "Time_ns":
+
+                np.arange(
+                    total_frames
+                ) * (
+                    dt_ps / 1000
+                ),
+
+            "SASA_A2":
+
+                sasa_calc
+                .results
+                .total_area
+
+        })
+
+        sasa_df.to_csv(
+
+            out_dir /
+            f"{system_name}"
+            f"_Intracellular_"
+            f"Pocket_SASA.csv",
+
+            index=False
+
+        )
+
+    finally:
+
+        release_universe(
+            u_sasa,
+            "SASA universe"
+        )
+def run_volume(top, traj_list,
+               system_name,
+               out_dir,
+               vol_resids):
+
+    logging.info(
+        f"Calculating Volume for {system_name}"
+    )
+
+    u_vol = None
 
     try:
-        chains = protein.chainIDs
-    except AttributeError:
+
+        u_vol = build_aligned_universe(
+            top,
+            traj_list
+        )
+
+        protein = u_vol.select_atoms(
+            "protein"
+        )
+
+        vdw_dict = {
+            'C': 1.70,
+            'O': 1.52,
+            'N': 1.55,
+            'S': 1.80,
+            'H': 1.20,
+            'P': 1.80
+        }
+
+        radii = np.array([
+            vdw_dict.get(
+                atom.element.upper(),
+                1.50
+            )
+            for atom in protein
+        ])
+
         try:
-            chains = protein.segids
+            chains = protein.chainIDs
+
         except AttributeError:
-            chains = np.array(['A'] * len(protein))
 
-    atomic_data = np.empty((len(protein), 8), dtype=object)
-    atomic_data[:, 0] = protein.names
-    atomic_data[:, 1] = protein.resnames
-    atomic_data[:, 2] = chains
-    atomic_data[:, 3] = protein.resids
-    atomic_data[:, 7] = radii
+            try:
+                chains = protein.segids
 
-    pocket_atoms = u.select_atoms(f"protein and resid {' '.join(map(str, vol_resids))}")
-    if len(pocket_atoms) == 0:
-        logging.warning(" -> WARNING: No atoms found for Volume selection. Skipping.")
-        return
+            except AttributeError:
+                chains = np.array(
+                    ['A'] * len(protein)
+                )
 
-    u.trajectory[0]
-    box_buffer = 5.0
-    p_min = pocket_atoms.positions.min(axis=0) - box_buffer
-    p_max = pocket_atoms.positions.max(axis=0) + box_buffer
+        atomic_data = np.empty(
+            (len(protein), 8),
+            dtype=object
+        )
 
-    box_vertices = np.array([
-        [p_min[0], p_min[1], p_min[2]],
-        [p_max[0], p_min[1], p_min[2]],
-        [p_min[0], p_max[1], p_min[2]],
-        [p_min[0], p_min[1], p_max[2]]
-    ])
+        atomic_data[:,0] = protein.names
+        atomic_data[:,1] = protein.resnames
+        atomic_data[:,2] = chains
+        atomic_data[:,3] = protein.resids
+        atomic_data[:,7] = radii
 
-    volumes   = []
-    step_size = 0.6
-    voxel_volume = step_size ** 3  # 0.216 Å³
+        pocket_atoms = u_vol.select_atoms(
+            f"protein and resid "
+            f"{' '.join(map(str, vol_resids))}"
+        )
 
-    for ts in tqdm(u.trajectory, desc=f"Volume {system_name}"):
-        atomic_data[:, 4:7] = protein.positions
-        results = pyKVFinder.detect(
-            atomic=atomic_data, vertices=box_vertices,
-            step=step_size, probe_in=1.4, probe_out=4.0)
+        if len(pocket_atoms) == 0:
 
-        num_cavities = results[0]
-        grid         = results[1]
+            logging.warning(
+                "No atoms found."
+            )
 
-        if num_cavities > 0:
-            cavity_volumes = [np.sum(grid == cav_id) * voxel_volume
-                              for cav_id in range(1, num_cavities + 1)]
-            volumes.append(max(cavity_volumes))
-        else:
-            volumes.append(0.0)
+            return
 
-    total_frames = len(volumes)
-    dt_ps = getattr(u.trajectory, 'dt', 10.0)
+        u_vol.trajectory[0]
 
-    pd.DataFrame({
-        'Frame':     range(total_frames),
-        'Time_ns':   [i * (dt_ps / 1000.0) for i in range(total_frames)],
-        'Volume_A3': volumes
-    }).to_csv(out_dir / f"{system_name}_Intracellular_Pocket_Volume.csv", index=False)
+        box_buffer = 5.0
+
+        p_min = (
+            pocket_atoms.positions.min(
+                axis=0
+            )
+            - box_buffer
+        )
+
+        p_max = (
+            pocket_atoms.positions.max(
+                axis=0
+            )
+            + box_buffer
+        )
+
+        box_vertices = np.array([
+
+            [p_min[0],
+             p_min[1],
+             p_min[2]],
+
+            [p_max[0],
+             p_min[1],
+             p_min[2]],
+
+            [p_min[0],
+             p_max[1],
+             p_min[2]],
+
+            [p_min[0],
+             p_min[1],
+             p_max[2]]
+
+        ])
+
+        volumes = []
+
+        step_size = 0.6
+
+        voxel_volume = (
+            step_size ** 3
+        )
+
+        for ts in tqdm(
+            u_vol.trajectory,
+            desc=f"Volume {system_name}"
+        ):
+
+            atomic_data[:,4:7] = (
+                protein.positions
+            )
+
+            results = pyKVFinder.detect(
+
+                atomic=atomic_data,
+
+                vertices=box_vertices,
+
+                step=step_size,
+
+                probe_in=1.4,
+
+                probe_out=4.0
+
+            )
+
+            num_cavities = results[0]
+
+            grid = results[1]
+
+            if num_cavities > 0:
+
+                cavity_volumes = [
+
+                    np.sum(
+                        grid == cav_id
+                    ) * voxel_volume
+
+                    for cav_id
+                    in range(
+                        1,
+                        num_cavities + 1
+                    )
+
+                ]
+
+                volumes.append(
+                    max(
+                        cavity_volumes
+                    )
+                )
+
+            else:
+
+                volumes.append(
+                    0.0
+                )
+
+        total_frames = len(
+            volumes
+        )
+
+        dt_ps = getattr(
+            u_vol.trajectory,
+            'dt',
+            10.0
+        )
+
+        pd.DataFrame({
+
+            'Frame':
+                range(
+                    total_frames
+                ),
+
+            'Time_ns':
+
+                [
+                    i * (
+                        dt_ps / 1000
+                    )
+
+                    for i
+                    in range(
+                        total_frames
+                    )
+                ],
+
+            'Volume_A3':
+                volumes
+
+        }).to_csv(
+
+            out_dir /
+            f"{system_name}_Intracellular_Pocket_Volume.csv",
+
+            index=False
+
+        )
+
+    finally:
+
+        release_universe(
+            u_vol,
+            "Volume universe"
+        )
 
 def run_intramolecular_frames(u, system_name, rep_num, target_sel_str,
                                tracked_interactions, out_dir, n_jobs):
@@ -763,14 +1037,6 @@ def main():
             f.write(f'Replicate Boundaries (Frames): {replicate_boundaries_frames[:-1]}\n')
             f.write(f'Replicate Boundaries (Time in ns): {replicate_boundaries_time_ns[:-1]}\n')
 
-        # --- MANDATORY GLOBAL ALIGNMENT ---
-        logging.info(f"[{ligand_dir.name}] Applying global alignment...")
-        ref = mda.Universe(topology_path, trajectory_files[0])
-        ref.trajectory[0] # Anchor to first frame
-        align.AlignTraj(u_concat, ref, select="protein and backbone", in_memory=True).run()
-        logging.info(f"[{ligand_dir.name}] Alignment complete.")
-        # ---------------------------------------
-
         # --- Receptor and ligand selection strings ---
         all_protein_like = u_concat.select_atoms("protein")
         all_residues     = all_protein_like.residues
@@ -821,7 +1087,7 @@ def main():
 
         if args.sasa:
             analysis_queue.append(('SASA', lambda: run_sasa(
-                u_concat, ligand_name, output_path, args.sasa)))
+                topology_path, trajectory_files, ligand_name, output_path, args.sasa)))
 
         if args.volume is not None:
             vol_resids = args.volume if len(args.volume) > 0 else args.sasa
@@ -830,8 +1096,7 @@ def main():
                               f"and --sasa was not used as fallback.")
             else:
                 analysis_queue.append(('Volume', lambda: run_volume(
-                    u_concat, ligand_name, topology_path,
-                    trajectory_files, output_path, vol_resids)))
+                    topology_path, trajectory_files, ligand_name, output_path, vol_resids)))
 
         if args.intra or args.intra_sel:
             def run_intra_block():
