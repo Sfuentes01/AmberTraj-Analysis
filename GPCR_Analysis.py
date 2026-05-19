@@ -172,13 +172,13 @@ def run_rmsd(u, protein_sel, ligand_sel, system_name, top, traj_list, out_dir):
 def run_rmsf(u, protein_sel, ligand_sel, system_name, top, traj_list, out_dir):
     logging.info(f"Calculating RMSF for {system_name}...")
 
-    ref = mda.Universe(top, traj_list[0])
-    align_mask = f'{protein_sel} and name CA'
-
-    # NOTE: in_memory=True permanently modifies u (i.e. u_concat) in place.
-    # All analyses queued after RMSF will run on the aligned trajectory.
-    # Ensure RMSD is queued before RMSF so it operates on the raw coordinates.
-    align.AlignTraj(u, ref, select=align_mask, in_memory=True).run()
+    # ref = mda.Universe(top, traj_list[0])
+    # align_mask = f'{protein_sel} and name CA'
+    #
+    # # NOTE: in_memory=True permanently modifies u (i.e. u_concat) in place.
+    # # All analyses queued after RMSF will run on the aligned trajectory.
+    # # Ensure RMSD is queued before RMSF so it operates on the raw coordinates.
+    # align.AlignTraj(u, ref, select=align_mask, in_memory=True).run()
 
     calc_masks = {'Receptor': f'{protein_sel} and name CA'}
     if ligand_sel:
@@ -311,7 +311,6 @@ def run_dihedrals(u, system_name, out_dir, motif_dry, motif_tswitch, motif_npy):
 def run_sasa(u, system_name, out_dir, sasa_resids):
     logging.info(f"Calculating SASA for {system_name}...")
 
-    # Mute the C-library's stderr pipe
     freesasa.setVerbosity(freesasa.nowarnings)
 
     res_str = " ".join(map(str, sasa_resids))
@@ -326,13 +325,11 @@ def run_sasa(u, system_name, out_dir, sasa_resids):
 
     logging.info(f" -> Selected {len(pocket_ag)} atoms across {len(pocket_ag.residues)} residues.")
 
-    # 2. FIX: Pass the AtomGroup directly instead of (u, select=...)
     sasa_calc = SASAAnalysis(pocket_ag).run(verbose=True)
 
     total_frames = len(u.trajectory)
     dt_ps = getattr(u.trajectory, 'dt', 10.0)
 
-    # 3. FIX: Safe extraction of the SASA array
     try:
         sasa_data = sasa_calc.results.sasa
     except AttributeError:
@@ -343,7 +340,7 @@ def run_sasa(u, system_name, out_dir, sasa_resids):
     sasa_df = pd.DataFrame({
         'Frame': np.arange(total_frames),
         'Time_ns': np.arange(total_frames) * (dt_ps / 1000.0),
-        'SASA_Å2': sasa_data
+        'SASA_A2': sasa_data
     })
 
     csv_path = out_dir / f"{system_name}_Intracellular_Pocket_SASA.csv"
@@ -418,7 +415,7 @@ def run_volume(u, system_name, top, traj_list, out_dir, vol_resids):
     pd.DataFrame({
         'Frame':     range(total_frames),
         'Time_ns':   [i * (dt_ps / 1000.0) for i in range(total_frames)],
-        'Volume_Å3': volumes
+        'Volume_A3': volumes
     }).to_csv(out_dir / f"{system_name}_Intracellular_Pocket_Volume.csv", index=False)
 
 def run_intramolecular_frames(u, system_name, rep_num, target_sel_str,
@@ -765,6 +762,14 @@ def main():
             f.write(f'Total Simulated Time: {total_time_ns:.2f} ns\n')
             f.write(f'Replicate Boundaries (Frames): {replicate_boundaries_frames[:-1]}\n')
             f.write(f'Replicate Boundaries (Time in ns): {replicate_boundaries_time_ns[:-1]}\n')
+
+        # --- MANDATORY GLOBAL ALIGNMENT ---
+        logging.info(f"[{ligand_dir.name}] Applying global alignment...")
+        ref = mda.Universe(topology_path, trajectory_files[0])
+        ref.trajectory[0] # Anchor to first frame
+        align.AlignTraj(u_concat, ref, select="protein and backbone", in_memory=True).run()
+        logging.info(f"[{ligand_dir.name}] Alignment complete.")
+        # ---------------------------------------
 
         # --- Receptor and ligand selection strings ---
         all_protein_like = u_concat.select_atoms("protein")
